@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+
+*.log
+coverage.out
+
+.DS_Store
+Thumbs.db
+
+bin/
+dist/

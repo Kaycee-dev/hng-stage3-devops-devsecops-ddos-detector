@@ -1,0 +1,47 @@
+log_path: /var/log/nginx/hng-access.log
+audit_log_path: /var/log/detector/audit.log
+dashboard_addr: :8081
+slack_webhook_url: ${SLACK_WEBHOOK_URL}
+startup_self_check: true
+blocker_dry_run: false
+tail_from_end: true
+global_alert_cooldown_seconds: 60
+ip_alert_cooldown_seconds: 30
+
+thresholds:
+  window_seconds: 60
+  baseline_minutes: 30
+  baseline_recalc_seconds: 60
+  min_baseline_samples: 120
+  min_hourly_samples: 120
+  floor_mean: 0.10
+  floor_stddev: 0.10
+  error_floor_mean: 0.02
+  zscore_threshold: 3.0
+  multiplier_threshold: 5.0
+  tightened_zscore_threshold: 2.0
+  tightened_multiplier_threshold: 3.0
+  error_surge_multiplier: 3.0
+
+ban_durations:
+  - 10m
+  - 30m
+  - 2h
+  - permanent
+
+allowlist:
+  - 127.0.0.0/8
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 169.254.0.0/16
+  - ::1/128
+  - fc00::/7
+  - fe80::/10
+
+notifier:
+  timeout_seconds: 5
+
+dashboard:
+  refresh_seconds: 3
+  title: HNG DDoS Detector
