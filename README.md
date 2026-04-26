@@ -7,7 +7,7 @@ Go-based anomaly detection engine for the HNG Stage 3 Nextcloud brief. The stack
 - Server IP: `34.52.154.171`
 - Metrics dashboard URL: `http://hng-stage3-kelechi.duckdns.org`
 - GitHub repo: `https://github.com/Kaycee-dev/hng-stage3-devops-devsecops-ddos-detector`
-- Blog post: `https://<published-blog-url>` (publish before submission)
+- Blog post: `https://medium.com/@kcsplace20/how-i-built-a-simple-ddos-detection-engine-for-nextcloud-5470ac4604cc`
 
 A beginner-friendly draft is available at `docs/BLOG_POST_DRAFT.md` and should be published before final submission.
 
