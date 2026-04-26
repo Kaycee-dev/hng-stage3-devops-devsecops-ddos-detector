@@ -19,6 +19,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin do
 systemctl enable --now docker
 ufw allow OpenSSH
 ufw allow 80/tcp
+ufw allow from 172.16.0.0/12 to any port 8081 proto tcp comment 'detector dashboard from docker bridges'
 ufw --force enable
 
 docker version
