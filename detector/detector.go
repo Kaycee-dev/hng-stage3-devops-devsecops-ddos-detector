@@ -145,11 +145,18 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 }
 
+// Process is called for every parsed access log line. It updates the
+// global and per-IP sliding windows, records into the corresponding
+// baselines, evaluates both the global and per-IP detection rules, and
+// dispatches blocks or alerts when those rules fire. Per-IP anomalies
+// trigger an iptables DROP plus a Slack alert; global anomalies only
+// alert (the brief forbids blocking everyone during a global spike).
 func (e *Engine) Process(entry AccessLog) {
 	now := entry.ParsedTime
 	if now.IsZero() {
 		now = time.Now()
 	}
+	// Defend against clock-skewed log lines from the future.
 	if now.After(time.Now().Add(5 * time.Minute)) {
 		now = time.Now()
 	}
@@ -157,6 +164,7 @@ func (e *Engine) Process(entry AccessLog) {
 
 	var ipDecision, globalDecision DetectionDecision
 	e.mu.Lock()
+	// Update the global 60s deque and global baseline counters.
 	e.globalRequests.PushBack(now)
 	e.globalErrors.EvictBefore(now.Add(-e.cfg.WindowDuration()))
 	if isError {
@@ -166,6 +174,7 @@ func (e *Engine) Process(entry AccessLog) {
 	globalRate := e.globalRequests.Rate(now, e.cfg.WindowDuration())
 	globalDecision = e.evaluate("", "global", globalRate, e.globalBaseline.Current(), false)
 
+	// Update the per-IP 60s deque and per-IP baseline counters.
 	stats := e.ipStats(entry.SourceIP)
 	stats.Requests.PushBack(now)
 	if isError {
@@ -177,7 +186,11 @@ func (e *Engine) Process(entry AccessLog) {
 	ipRate := stats.Requests.Rate(now, e.cfg.WindowDuration())
 	errorRate := stats.Errors.Rate(now, e.cfg.WindowDuration())
 	ipBaseline := stats.Baseline.Current()
+	// Error-surge rule: when the IP's error rate exceeds N x its baseline
+	// error mean, future evaluations for this IP use tightened thresholds.
 	stats.Tightened = errorRate > 0 && errorRate >= e.cfg.Thresholds.ErrorSurgeMultiplier*ipBaseline.ErrorMean
+	// Allowlisted IPs are never evaluated for blocks; the blocker also
+	// refuses them defensively if a decision were ever to leak through.
 	if !e.blocker.IsAllowedIP(entry.SourceIP) {
 		ipDecision = e.evaluate(entry.SourceIP, "ip", ipRate, ipBaseline, stats.Tightened)
 	}
@@ -200,6 +213,14 @@ func (e *Engine) ipStats(ip string) *IPStats {
 	return stats
 }
 
+// evaluate applies the two anomaly rules from the brief in order:
+//  1. z-score = (rate - baseline.mean) / baseline.stddev > Z threshold
+//  2. rate > multiplier x baseline.mean
+//
+// Whichever fires first marks the decision. If the IP has been flagged
+// by the error-surge rule, the tightened thresholds (lower Z, lower
+// multiplier) are used instead. Thresholds come from config; nothing in
+// this function is hardcoded.
 func (e *Engine) evaluate(ip, scope string, rate float64, baseline Baseline, tightened bool) DetectionDecision {
 	zThreshold := e.cfg.Thresholds.ZScoreThreshold
 	multiplier := e.cfg.Thresholds.MultiplierThreshold
@@ -236,6 +257,11 @@ func (e *Engine) evaluate(ip, scope string, rate float64, baseline Baseline, tig
 	return DetectionDecision{Scope: scope, IP: ip, Rate: rate, Baseline: baseline, ZScore: zScore}
 }
 
+// handleIPAnomaly records a ban entry, installs the iptables DROP rule,
+// writes the audit line, sends a Slack alert, and schedules the unban
+// according to the backoff ladder (10m, 30m, 2h, permanent). If the
+// iptables call fails the in-memory ban is rolled back so the IP can be
+// retried; the failure is recorded as BLOCK_FAILED in the audit log.
 func (e *Engine) handleIPAnomaly(decision DetectionDecision) {
 	if e.blocker.IsAllowedIP(decision.IP) {
 		return
@@ -293,6 +319,11 @@ func (e *Engine) handleIPAnomaly(decision DetectionDecision) {
 	}
 }
 
+// handleGlobalAnomaly sends a Slack alert and writes a GLOBAL_ALERT audit
+// line. It deliberately does not block any IPs: under a global spike,
+// blocking specific IPs would hide the underlying cause and blocking
+// everyone would deny service to legitimate users. The cooldown
+// suppresses repeated alerts during a sustained event.
 func (e *Engine) handleGlobalAnomaly(decision DetectionDecision) {
 	e.mu.Lock()
 	if time.Since(e.lastGlobalAlert) < e.cfg.GlobalAlertCooldown {
@@ -345,6 +376,11 @@ func (e *Engine) sendAlert(ctx context.Context, alert Alert) {
 	}
 }
 
+// RecalculateBaselines runs every BaselineRecalcSeconds. It refreshes
+// the global baseline and every per-IP baseline, garbage-collects IP
+// stats that have been silent for two hours and are not currently
+// banned, and writes a BASELINE audit entry so the operator has a
+// time-stamped record that the detector is alive and learning.
 func (e *Engine) RecalculateBaselines(now time.Time) {
 	e.mu.Lock()
 	global := e.globalBaseline.Recalculate(now)

@@ -5,15 +5,23 @@ import (
 	"time"
 )
 
+// TimeDeque is a deque-backed sliding window of request timestamps.
+// New events are appended to the tail; events older than the configured
+// window are evicted from the head. This satisfies the brief's requirement
+// that the sliding window not be faked with per-minute counters.
 type TimeDeque struct {
 	values []time.Time
 	head   int
 }
 
+// PushBack records a new event timestamp at the tail of the deque.
 func (d *TimeDeque) PushBack(value time.Time) {
 	d.values = append(d.values, value)
 }
 
+// EvictBefore drops every timestamp strictly older than cutoff. The head
+// index is advanced lazily; the underlying slice is compacted only when
+// the unused prefix grows large enough to be worth reclaiming.
 func (d *TimeDeque) EvictBefore(cutoff time.Time) {
 	for d.head < len(d.values) && d.values[d.head].Before(cutoff) {
 		d.head++
@@ -25,10 +33,14 @@ func (d *TimeDeque) EvictBefore(cutoff time.Time) {
 	}
 }
 
+// Len returns the number of events currently inside the window.
 func (d *TimeDeque) Len() int {
 	return len(d.values) - d.head
 }
 
+// Rate evicts stale events relative to now and returns events-per-second
+// over the supplied window. This is the request rate used by the detector
+// for both per-IP and global decisions.
 func (d *TimeDeque) Rate(now time.Time, window time.Duration) float64 {
 	d.EvictBefore(now.Add(-window))
 	if window <= 0 {
@@ -63,6 +75,10 @@ type secondSlot struct {
 	FirstSeen   time.Time
 }
 
+// BaselineManager maintains per-second request and error counts over the
+// last `window` (30 minutes per the brief) and per-hour slots for each
+// hour bucket. Recalculate prefers the current-hour slot once it has
+// enough samples; otherwise it falls back to the rolling 30-minute view.
 type BaselineManager struct {
 	window           time.Duration
 	minSamples       int
@@ -92,6 +108,10 @@ func NewBaselineManager(cfg Config) *BaselineManager {
 	}
 }
 
+// Record increments the per-second counters for the absolute second the
+// event occurred in, both in the rolling 30-minute view and inside the
+// hour bucket the event belongs to. Errors are tracked in a parallel
+// counter so the error-surge rule can compare them to the baseline.
 func (b *BaselineManager) Record(at time.Time, isError bool) {
 	sec := at.Unix()
 	if b.firstSeen.IsZero() || at.Before(b.firstSeen) {
@@ -121,6 +141,11 @@ func (b *BaselineManager) Record(at time.Time, isError bool) {
 	}
 }
 
+// Recalculate is invoked every BaselineRecalcSeconds (60s per the brief).
+// It computes both the rolling 30-minute baseline and the current-hour
+// baseline and chooses the latter when the current hour has enough
+// samples. Floor values from config protect against cold-start zeros
+// without hardcoding the effective mean.
 func (b *BaselineManager) Recalculate(now time.Time) Baseline {
 	b.cleanup(now)
 	rolling := b.computeRolling(now)
@@ -192,6 +217,11 @@ func (b *BaselineManager) computeCurrentHour(now time.Time) Baseline {
 	return computeBaseline(start, now, slot.Counts, slot.ErrorCounts)
 }
 
+// computeBaseline averages per-second counts between start and end
+// inclusive, returning mean and population standard deviation for both
+// total requests and error requests. Empty seconds count as zeros, which
+// is intentional: an idle period should pull the mean down so legitimate
+// activity that follows can be measured against it.
 func computeBaseline(start, end time.Time, counts, errors map[int64]int) Baseline {
 	if end.Before(start) {
 		return Baseline{}
